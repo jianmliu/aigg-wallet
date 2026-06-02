@@ -1,6 +1,6 @@
-# agentwallet
+# aigg-wallet (package aiggwallet)
 
-`github.com/p2papi/agentwallet` — a self-contained Go toolkit for **per-subject
+`github.com/jianmliu/aigg-wallet` — a self-contained Go toolkit for **per-subject
 agent EOAs that pay on-chain via Uniswap Permit2 / EIP-2612 / EIP-3009**.
 
 Extracted from the AI.GG (p2papi) Phase 2 agentic-wallet design so other
@@ -50,47 +50,47 @@ The toolkit owns only chain mechanics. These plug in:
 
 ```go
 seed := loadMasterSeedFromTEEorKMS()            // 32 bytes, kept secret
-signer, _ := agentwallet.NewBIP44Signer(seed, agentwallet.DefaultCoinType, userID)
+signer, _ := aiggwallet.NewBIP44Signer(seed, aiggwallet.DefaultCoinType, userID)
 
 addr, _ := signer.Address(ctx)                  // the agent EOA address
 
 // User authorizes the agent via Permit2 PermitSingle (signed in their wallet,
 // or here for a service-side signer):
-sp, _ := signer.SignPermit2(ctx, agentwallet.Permit2TransferParams{
+sp, _ := signer.SignPermit2(ctx, aiggwallet.Permit2TransferParams{
     Token: usdc, Spender: addr, Amount: "100000000",
     Nonce: onchainPermit2Nonce, Deadline: deadline,
-    ChainID: 8453, Permit2Addr: agentwallet.CanonicalPermit2Address,
+    ChainID: 8453, Permit2Addr: aiggwallet.CanonicalPermit2Address,
 })
 
 // Build the on-chain calls the agent EOA broadcasts:
-permitData, _ := agentwallet.EncodePermitCall(...)         // Permit2.permit
-transferData, _ := agentwallet.EncodeTransferFromCall(...) // Permit2.transferFrom
+permitData, _ := aiggwallet.EncodePermitCall(...)         // Permit2.permit
+transferData, _ := aiggwallet.EncodeTransferFromCall(...) // Permit2.transferFrom
 
 // Auto-fund gas before broadcasting:
-funder, _ := agentwallet.NewGasFunder(rpc, funderKeyHex, nil, nil)
+funder, _ := aiggwallet.NewGasFunder(rpc, funderKeyHex, nil, nil)
 funder.EnsureGas(ctx, addr, chainID)
 ```
 
 ## End-to-end (v1)
 
 ```go
-store := myAuthorizationStore{}                 // your DB, or agentwallet.NewMemoryStore()
-signer, _ := agentwallet.NewBIP44Signer(seed, agentwallet.DefaultCoinType, userID)
+store := myAuthorizationStore{}                 // your DB, or aiggwallet.NewMemoryStore()
+signer, _ := aiggwallet.NewBIP44Signer(seed, aiggwallet.DefaultCoinType, userID)
 agent, _ := signer.Address(ctx)
 
 // user submits a signed PermitSingle → verify + cache
-authz := &agentwallet.Authorizer{Store: store}
+authz := &aiggwallet.Authorizer{Store: store}
 authz.VerifyAndCache(ctx, params, sigHex, ownerAddr, agent, now)
 
 // later: spend (gas auto-funded, permit+transferFrom, spent bumped, credited)
-spender := &agentwallet.Spender{
+spender := &aiggwallet.Spender{
     Store: store, RPC: rpc, Signer: signer,
     SellerAddressFn: treasuryFn, GasFunder: funder, Crediter: ledger,
 }
 res, _ := spender.Spend(ctx, big.NewInt(amount), now)   // res.TransferTxHash, res.GasFundedTxHash, …
 
 // background reconciliation
-loop := &agentwallet.EventLoop{RPC: rpc, Store: store, Watermark: wm,
+loop := &aiggwallet.EventLoop{RPC: rpc, Store: store, Watermark: wm,
     USDCAddress: usdc, TreasuryAddressFn: treasuryFn, Crediter: ledger}
 go loop.Run(ctx, func(err error){ log.Warn(err) })
 ```

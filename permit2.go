@@ -1,4 +1,4 @@
-package agentwallet
+package aiggwallet
 
 import (
 	"fmt"

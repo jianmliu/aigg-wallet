@@ -1,4 +1,4 @@
-module github.com/p2papi/agentwallet
+module github.com/jianmliu/aigg-wallet
 
 go 1.26.3
 

@@ -12,7 +12,7 @@
 // Security: the master seed and derived private keys are sensitive. Derived
 // keys are returned in AgentKey.PrivateKey; call Zeroize() as soon as the
 // signature/tx is built. The default BIP44Signer does this internally.
-package agentwallet
+package aiggwallet
 
 import (
 	"errors"
