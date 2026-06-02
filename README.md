@@ -23,6 +23,15 @@ and gas auto-funding.
 | `signer.go` | `Signer` interface + `BIP44Signer` (derives + zeroizes per call) |
 | `gasfunder.go` | `GasFunder` interface + `RealGasFunder` (tops up an agent EOA's gas, EIP-1559 fee, nonce-serialized) |
 
+### Orchestration layer (v1)
+
+| File | Capability |
+|---|---|
+| `store.go` | `Authorization` + `AuthorizationStore` port + thread-safe `MemoryStore` + `ErrNoAuthorization` / `ErrAuthorizationMissingSignature` |
+| `authorize.go` | `Authorizer.VerifyAndCache` — bounds + spender anti-spoof + ecrecover, then upsert |
+| `spend.go` | `Spender.Spend` — load authz → (gas-fund) → skip-permit-if-covered → `Permit2.permit` → `transferFrom` → wait receipts → bump spent → optional `Crediter`. `ErrAllowanceExceeded`, `SpendResult` |
+| `listener.go` | `DecodePermit/Lockdown/Transfer` + `EventLoop` (dual filter: Permit2 Permit/Lockdown + USDC Transfer→treasury) over `AuthorizationStore` + `WatermarkStore`, optional `AgentFilter` |
+
 ## What's NOT here (the consumer's ports)
 
 The toolkit owns only chain mechanics. These plug in:
@@ -30,11 +39,12 @@ The toolkit owns only chain mechanics. These plug in:
 - **Master seed custody** — pass the seed to `NewBIP44Signer`, or implement
   `Signer` over your own key (TEE / KMS / a different derivation path like
   onchainpal's `m/44'/60'/0'/0/<index>`).
-- **Persistence** of cached authorizations + `spent_amount` — not in this cut
-  (see Roadmap). The higher-level `Spender`/`Authorizer`/`Listener` will depend
-  on an `AuthorizationStore` interface you implement over your DB.
-- **Internal ledger / crediting**, the subject→account mapping, HTTP surfaces,
-  the x402 facilitator — all consumer-side.
+- **Persistence** — implement `AuthorizationStore` over your DB (a `MemoryStore`
+  is included for tests / simple use). Row identity is (Owner, Agent, Token,
+  Nonce); your "subject" (user_id / npcId) is your own concern.
+- **Internal ledger / crediting** — implement the optional `Crediter`.
+- The subject→account mapping, HTTP surfaces, the x402 facilitator — all
+  consumer-side.
 
 ## Quick start
 
@@ -61,22 +71,29 @@ funder, _ := agentwallet.NewGasFunder(rpc, funderKeyHex, nil, nil)
 funder.EnsureGas(ctx, addr, chainID)
 ```
 
-## Roadmap (next layer, not in this first cut)
+## End-to-end (v1)
 
-The chain-mechanics core above is lifted verbatim from p2papi (battle-tested:
-real Base Sepolia spends + replay + multi-NPC verify). The **orchestration
-layer** that ties it together is the next extraction:
+```go
+store := myAuthorizationStore{}                 // your DB, or agentwallet.NewMemoryStore()
+signer, _ := agentwallet.NewBIP44Signer(seed, agentwallet.DefaultCoinType, userID)
+agent, _ := signer.Address(ctx)
 
-- `AuthorizationStore` interface (Get active / Upsert / BumpSpent / MarkLocked)
-- `Authorizer` — verify a submitted PermitSingle (ecrecover + spender match +
-  bounds) and cache it via the store
-- `Spender` — load authz → gas-fund → `Permit2.permit` → `transferFrom` → wait
-  receipts → bump spent → optional `Crediter` callback
-- `Listener` — poll `Permit` / `Lockdown` / `Transfer` events and reconcile the
-  store (decoders already exist in p2papi `permit2_event_listener.go`)
+// user submits a signed PermitSingle → verify + cache
+authz := &agentwallet.Authorizer{Store: store}
+authz.VerifyAndCache(ctx, params, sigHex, ownerAddr, agent, now)
 
-These live in p2papi `internal/service/agent_*.go` today; lifting them here
-just means swapping the ent DB calls for the `AuthorizationStore` port.
+// later: spend (gas auto-funded, permit+transferFrom, spent bumped, credited)
+spender := &agentwallet.Spender{
+    Store: store, RPC: rpc, Signer: signer,
+    SellerAddressFn: treasuryFn, GasFunder: funder, Crediter: ledger,
+}
+res, _ := spender.Spend(ctx, big.NewInt(amount), now)   // res.TransferTxHash, res.GasFundedTxHash, …
+
+// background reconciliation
+loop := &agentwallet.EventLoop{RPC: rpc, Store: store, Watermark: wm,
+    USDCAddress: usdc, TreasuryAddressFn: treasuryFn, Crediter: ledger}
+go loop.Run(ctx, func(err error){ log.Warn(err) })
+```
 
 ## Migration note
 
