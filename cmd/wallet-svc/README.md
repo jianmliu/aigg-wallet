@@ -58,3 +58,19 @@ WALLET_TIMEOUT_SECONDS=300
 (scoped) and leaves the generic endpoint off, so a caller can never redirect
 funds or sign an off-policy message. The seed must come from a TEE sealed store,
 not a plain env var.
+
+## Deploy (node1 / Docker)
+
+```bash
+# 1) cross-compile static linux/amd64 binary
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o wallet-svc ./cmd/wallet-svc
+# 2) build + ship the image
+docker buildx build --platform linux/amd64 -f cmd/wallet-svc/Dockerfile -t onchainpal-wallet-svc:latest .
+docker save onchainpal-wallet-svc:latest | gzip | ssh node1 'sudo docker load'
+# 3) on node1 (/opt/sub2api-staging): seed + token in .env (generated on-box, never echoed)
+#    WALLET_MASTER_SEED=$(openssl rand -hex 32)   WALLET_AUTH_TOKEN=$(openssl rand -hex 16)
+#    then `docker-compose -f docker-compose.yml -f wallet-svc.override.yml up -d wallet-svc`
+```
+Joins the sub2api-staging docker network → reachable internally at
+`http://wallet-svc:8091` (e.g. from the inference-proxy). Manage both proxy +
+wallet-svc together by passing both override files to one `docker-compose` call.
