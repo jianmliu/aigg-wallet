@@ -23,19 +23,38 @@ go run ./cmd/wallet-svc
 
 | Method / path | Body | Returns |
 |---|---|---|
-| `GET /healthz` | — | `{ ok, genericSign }` |
+| `GET /healthz` | — | `{ ok, genericSign, eip3009, network }` |
 | `POST /address` | `{ subject }` | `{ address, derivationPath }` — `m/44'/<coin>'/<account(keccak(subject))>'` |
-| `POST /sign` | `{ subject, typedData }` | `{ address, signature, digest }` — generic EIP-712 (gated) |
+| **`POST /sign/eip3009`** | `{ subject, value, validAfter?, validBefore?, nonce? }` | `{ address, signature, digest, payload, requirements }` — **scoped, production** |
+| `POST /sign` | `{ subject, typedData }` | `{ address, signature, digest }` — generic EIP-712, **DEV-gated** |
 
-Auth: `Authorization: Bearer <WALLET_AUTH_TOKEN>` on `/address` + `/sign`
-(fail-closed when the token is unset).
+Auth: `Authorization: Bearer <WALLET_AUTH_TOKEN>` (fail-closed when unset).
+
+### `/sign/eip3009` — the production signer
+
+The service builds the EIP-3009 `TransferWithAuthorization` typed data itself from
+**fixed config** and **enforces scope** before signing — the caller only supplies
+`value` (+ optional validity/nonce):
+
+- recipient (`to`) is **forced to `WALLET_PAY_TO`** — a caller cannot redirect funds;
+- token/name/version/chainId come from config — cannot sign other assets;
+- `value` is rejected if it exceeds `WALLET_MAX_VALUE`;
+- returns the full **x402 v2 `payload` + `requirements`**, ready to POST to the facilitator.
+
+```
+WALLET_GCC_TOKEN=0x…           # GCC ERC-20 (verifyingContract)
+WALLET_PAY_TO=0x…              # AIGG seller — recipient is LOCKED to this
+WALLET_CHAIN_ID=84532          # default (Base Sepolia)
+WALLET_GCC_NAME="Guaranteed Capacity Credit"
+WALLET_GCC_VERSION=1
+WALLET_MAX_VALUE=1000000000000000000   # optional per-call cap (atoms)
+WALLET_TIMEOUT_SECONDS=300
+```
 
 ## SECURITY
 
-`/sign` is a **generic** EIP-712 signer, enabled only with
-`WALLET_ALLOW_GENERIC_SIGN=1` for development. A generic signing oracle lets any
-authorized caller sign arbitrary messages with the agent key. **In production,
-replace it with scoped endpoints** that build the typed data *here* from fixed
-config (GCC token, `payTo`, `maxAmount`) using the library's `SignEIP3009` /
-`SignPermit2` — so a caller can never redirect funds or sign an off-policy
-message. The seed must come from a TEE sealed store, not a plain env var.
+`/sign` is a **generic** EIP-712 signer (signing oracle) — enabled only with
+`WALLET_ALLOW_GENERIC_SIGN=1` for development. **Production uses `/sign/eip3009`**
+(scoped) and leaves the generic endpoint off, so a caller can never redirect
+funds or sign an off-policy message. The seed must come from a TEE sealed store,
+not a plain env var.
