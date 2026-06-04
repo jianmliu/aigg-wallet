@@ -17,6 +17,7 @@ package aiggwallet
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -52,52 +53,86 @@ func (a *AgentKey) Zeroize() {
 	}
 }
 
+// deriveHardened walks an all-hardened BIP-32 path m/<i0>'/<i1>'/... from
+// masterSeed and returns the leaf agent key. Each index must be in [0, 2^31)
+// (the hardened range). This is the shared primitive behind Derive /
+// DeriveAgent / DerivePath.
+func deriveHardened(masterSeed []byte, indices []uint32) (*AgentKey, error) {
+	if len(masterSeed) < 16 || len(masterSeed) > 64 {
+		return nil, fmt.Errorf("agentwallet: master seed must be 16-64 bytes (got %d)", len(masterSeed))
+	}
+	if len(indices) == 0 {
+		return nil, errors.New("agentwallet: empty derivation path")
+	}
+	for _, i := range indices {
+		if i >= (1 << 31) {
+			return nil, fmt.Errorf("agentwallet: index %d outside hardened range [0, 2^31)", i)
+		}
+	}
+	key, err := bip32.NewMasterKey(masterSeed)
+	if err != nil {
+		return nil, fmt.Errorf("agentwallet: master key: %w", err)
+	}
+	off := uint32(bip32.FirstHardenedChild) // 0x80000000
+	var path strings.Builder
+	path.WriteString("m")
+	for _, i := range indices {
+		if key, err = key.NewChildKey(i + off); err != nil {
+			return nil, fmt.Errorf("agentwallet: derive %d': %w", i, err)
+		}
+		fmt.Fprintf(&path, "/%d'", i)
+	}
+	if len(key.Key) != 32 {
+		return nil, errors.New("agentwallet: bip32 returned non-32-byte key")
+	}
+	priv, err := ethcrypto.ToECDSA(key.Key)
+	if err != nil {
+		return nil, fmt.Errorf("agentwallet: to-ecdsa: %w", err)
+	}
+	privCopy := make([]byte, 32)
+	copy(privCopy, key.Key)
+	return &AgentKey{
+		PrivateKey:     privCopy,
+		Address:        common.Address(ethcrypto.PubkeyToAddress(priv.PublicKey)).Hex(),
+		DerivationPath: path.String(),
+	}, nil
+}
+
 // Derive returns the agent EOA for (masterSeed, coinType, account) via the
 // BIP-44 hardened path m/44'/<coinType>'/<account>'. account is typically a
 // per-subject identifier (AI.GG: user_id). Hardened so child-key compromise
 // can't reverse the seed.
 //
-// Errors: seed not in [16,64] bytes; account not in (0, 2^31).
-//
-// Note: this is the AI.GG path shape (3 hardened levels). Consumers using a
-// different scheme (e.g. m/44'/60'/0'/0/<index>) should implement the Signer
-// interface over their own derivation instead.
+// Errors: seed not in [16,64] bytes; account not in (0, 2^31). (account 0 is
+// reserved — use DeriveAgent / DerivePath if you need index 0.)
 func Derive(masterSeed []byte, coinType, account uint32) (*AgentKey, error) {
-	if len(masterSeed) < 16 || len(masterSeed) > 64 {
-		return nil, fmt.Errorf("agentwallet: master seed must be 16-64 bytes (got %d)", len(masterSeed))
-	}
 	if account == 0 || account >= (1<<31) {
-		return nil, fmt.Errorf("agentwallet: account %d outside hardened range (1, 2^31)", account)
+		return nil, fmt.Errorf("agentwallet: account %d outside range (0, 2^31)", account)
 	}
-	master, err := bip32.NewMasterKey(masterSeed)
-	if err != nil {
-		return nil, fmt.Errorf("agentwallet: master key: %w", err)
-	}
-	off := uint32(bip32.FirstHardenedChild) // 0x80000000
-	purpose, err := master.NewChildKey(bip44Purpose + off)
-	if err != nil {
-		return nil, fmt.Errorf("agentwallet: derive 44': %w", err)
-	}
-	coin, err := purpose.NewChildKey(coinType + off)
-	if err != nil {
-		return nil, fmt.Errorf("agentwallet: derive %d': %w", coinType, err)
-	}
-	acct, err := coin.NewChildKey(account + off)
-	if err != nil {
-		return nil, fmt.Errorf("agentwallet: derive %d': %w", account, err)
-	}
-	if len(acct.Key) != 32 {
-		return nil, errors.New("agentwallet: bip32 returned non-32-byte key")
-	}
-	priv, err := ethcrypto.ToECDSA(acct.Key)
-	if err != nil {
-		return nil, fmt.Errorf("agentwallet: to-ecdsa: %w", err)
-	}
-	privCopy := make([]byte, 32)
-	copy(privCopy, acct.Key)
-	return &AgentKey{
-		PrivateKey:     privCopy,
-		Address:        common.Address(ethcrypto.PubkeyToAddress(priv.PublicKey)).Hex(),
-		DerivationPath: fmt.Sprintf("m/44'/%d'/%d'", coinType, account),
-	}, nil
+	return deriveHardened(masterSeed, []uint32{bip44Purpose, coinType, account})
+}
+
+// DeriveAgent returns the agent EOA for (owner, agent) via the STRUCTURED
+// 4-level hardened path m/44'/<coinType>'/<owner>'/<agent>'. This is the
+// recommended scheme for the "one owner, many agents" model: owner is a unique
+// per-owner index (AI.GG: user_id; an onchainpal tenant), agent is a unique
+// per-agent-within-owner index (a per-NPC / per-app slot).
+//
+// Why structured over hashing a subject into one account index:
+//   - collision-free per (owner, agent) — a keccak(subject)&(2^31-1) scheme
+//     collides at ~55k subjects (birthday bound) → two agents share a wallet;
+//   - encodes the owner→agents tree in the path; enumerable + recoverable from
+//     the seed; address is decoupled from any subject-string format;
+//   - standard BIP-44 — derivable/verifiable offline by any tool.
+//
+// owner and agent must each be in [0, 2^31).
+func DeriveAgent(masterSeed []byte, coinType, owner, agent uint32) (*AgentKey, error) {
+	return deriveHardened(masterSeed, []uint32{bip44Purpose, coinType, owner, agent})
+}
+
+// DerivePath returns the agent EOA for an arbitrary all-hardened path
+// m/<i0>'/<i1>'/... — the general primitive for callers that need a custom
+// depth/shape. Each index must be in [0, 2^31).
+func DerivePath(masterSeed []byte, hardenedIndices ...uint32) (*AgentKey, error) {
+	return deriveHardened(masterSeed, hardenedIndices)
 }

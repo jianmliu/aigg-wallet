@@ -316,6 +316,10 @@ func main() {
 		writeJSON(w, 200, map[string]any{"ok": true, "genericSign": allowGenericSign, "eip3009": gccToken != "" && payTo != "", "network": networkStr(), "csw": true, "cswAddressResolution": cswRPC != nil})
 	})
 	mux.HandleFunc("/address", addressHandler)
+	// Structured / explicit-path derivation (collision-free; preferred over the
+	// keccak(subject) /address scheme for the one-owner-many-agents model).
+	mux.HandleFunc("/address/agent", agentAddressHandler)
+	mux.HandleFunc("/address/path", pathAddressHandler)
 	mux.HandleFunc("/sign/eip3009", signEip3009Handler)
 	mux.HandleFunc("/sign", signHandler)
 	// Model B (Coinbase Smart Wallet / passkey) — no key material, packaging only.

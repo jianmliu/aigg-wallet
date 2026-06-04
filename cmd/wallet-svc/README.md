@@ -24,7 +24,9 @@ go run ./cmd/wallet-svc
 | Method / path | Body | Returns |
 |---|---|---|
 | `GET /healthz` | — | `{ ok, genericSign, eip3009, network, csw, cswAddressResolution }` |
-| `POST /address` | `{ subject }` | `{ address, derivationPath }` — `m/44'/<coin>'/<account(keccak(subject))>'` |
+| `POST /address` | `{ subject }` | `{ address, derivationPath }` — `m/44'/<coin>'/<account(keccak(subject))>'` (legacy; 31-bit, collides ~55k subjects) |
+| `POST /address/agent` | `{ owner, agent }` | `{ address, derivationPath }` — **structured** `m/44'/<coin>'/<owner>'/<agent>'` (collision-free, preferred) |
+| `POST /address/path` | `{ path:[i0,i1,…] }` | `{ address, derivationPath }` — arbitrary all-hardened path `m/<i0>'/<i1>'/…` |
 | **`POST /sign/eip3009`** | `{ subject, value, validAfter?, validBefore?, nonce? }` | `{ address, signature, digest, payload, requirements }` — **scoped, production** |
 | `POST /sign` | `{ subject, typedData }` | `{ address, signature, digest }` — generic EIP-712, **DEV-gated** |
 | `POST /csw/erc1271` | `{ authenticatorData, clientDataJSON, signature, ownerIndex? }` (all hex) | `{ erc1271, challenge }` — **Model B** |
