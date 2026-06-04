@@ -7,6 +7,7 @@
 //	browser/TS ──(no keys)──▶ TS RemoteAgentWallet ──HTTP+Bearer──▶ wallet-svc ──▶ signs with TEE-held seed
 //
 // Endpoints:
+//
 //	GET  /healthz
 //	POST /address       { subject }                                  → { address, derivationPath }       (Bearer)
 //	POST /sign/eip3009  { subject, value, validAfter?, validBefore?, nonce? }
@@ -45,6 +46,7 @@ var (
 	coin             = aiggwallet.DefaultCoinType
 	authToken        string
 	allowGenericSign bool
+	allowSignTx      bool
 
 	// Scope config for /sign/eip3009 (fixed; the caller cannot override these).
 	gccToken    string
@@ -298,6 +300,7 @@ func main() {
 	}
 	authToken = envOr("WALLET_AUTH_TOKEN", "")
 	allowGenericSign = os.Getenv("WALLET_ALLOW_GENERIC_SIGN") == "1"
+	allowSignTx = os.Getenv("WALLET_ALLOW_SIGN_TX") == "1"
 
 	// Scope config for /sign/eip3009
 	gccToken = envOr("WALLET_GCC_TOKEN", "")
@@ -327,7 +330,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "genericSign": allowGenericSign, "eip3009": gccToken != "" && payTo != "", "network": networkStr(), "csw": true, "cswAddressResolution": cswRPC != nil})
+		writeJSON(w, 200, map[string]any{"ok": true, "genericSign": allowGenericSign, "signTx": allowSignTx, "eip3009": gccToken != "" && payTo != "", "network": networkStr(), "csw": true, "cswAddressResolution": cswRPC != nil})
 	})
 	mux.HandleFunc("/address", addressHandler)
 	// Structured / explicit-path derivation (collision-free; preferred over the
@@ -336,6 +339,7 @@ func main() {
 	mux.HandleFunc("/address/path", pathAddressHandler)
 	mux.HandleFunc("/sign/eip3009", signEip3009Handler)
 	mux.HandleFunc("/sign", signHandler)
+	mux.HandleFunc("/sign/tx", signTxHandler) // raw EIP-1559 tx signing (gated, agent-spend delegation)
 	// Model B (Coinbase Smart Wallet / passkey) — no key material, packaging only.
 	mux.HandleFunc("/csw/erc1271", cswErc1271Handler)
 	mux.HandleFunc("/csw/account", cswAccountHandler)

@@ -41,6 +41,7 @@ systemic trust anchor — individual agent keys are bounded by their Permit2 all
 | `POST /address/path` | `{ path:[i0,i1,…] }` | `{ address, derivationPath }` — arbitrary all-hardened path `m/<i0>'/<i1>'/…` |
 | **`POST /sign/eip3009`** | `{ subject, value, validAfter?, validBefore?, nonce? }` | `{ address, signature, digest, payload, requirements }` — **scoped, production** |
 | `POST /sign` | `{ subject, typedData }` | `{ address, signature, digest }` — generic EIP-712, **DEV-gated** |
+| `POST /sign/tx` | `{ owner, agent \| path, chainID, nonce, to, data, value?, gas, gasTipCap, gasFeeCap }` | `{ from, rawSignedTx, hash }` — raw EIP-1559 signing for agent-spend delegation, **gated `WALLET_ALLOW_SIGN_TX=1`** |
 | `POST /csw/erc1271` | `{ authenticatorData, clientDataJSON, signature, ownerIndex? }` (all hex) | `{ erc1271, challenge }` — **Model B** |
 | `POST /csw/account` | `{ owners:[{x,y}\|{address}], nonce? }` | `{ factory, ownerBytes[], createAccountCalldata, getAddressCalldata, address? }` — **Model B** |
 
