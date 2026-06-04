@@ -22,6 +22,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -54,6 +55,11 @@ var (
 	chainID     int64
 	maxValue    *big.Int // nil = no cap
 	timeoutSecs int64
+
+	// Model B (Coinbase Smart Wallet): optional RPC to resolve a CSW
+	// counterfactual address. nil → /csw/account omits "address" (still
+	// returns owner bytes + factory calldata).
+	cswRPC aiggwallet.BaseRPC
 )
 
 func networkStr() string { return "eip155:" + strconv.FormatInt(chainID, 10) }
@@ -294,15 +300,27 @@ func main() {
 	}
 	_ = gccDecimals // reserved (display conversions live caller-side)
 
+	// Model B: optional RPC for CSW counterfactual-address resolution.
+	if u := envOr("WALLET_CSW_RPC_URL", ""); u != "" {
+		if rpc, err := aiggwallet.NewBaseRPC(context.Background(), u); err != nil {
+			log.Printf("[wallet-svc] WALLET_CSW_RPC_URL set but dial failed (CSW address resolution disabled): %v", err)
+		} else {
+			cswRPC = rpc
+		}
+	}
+
 	listen := envOr("WALLET_LISTEN", ":8091")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "genericSign": allowGenericSign, "eip3009": gccToken != "" && payTo != "", "network": networkStr()})
+		writeJSON(w, 200, map[string]any{"ok": true, "genericSign": allowGenericSign, "eip3009": gccToken != "" && payTo != "", "network": networkStr(), "csw": true, "cswAddressResolution": cswRPC != nil})
 	})
 	mux.HandleFunc("/address", addressHandler)
 	mux.HandleFunc("/sign/eip3009", signEip3009Handler)
 	mux.HandleFunc("/sign", signHandler)
+	// Model B (Coinbase Smart Wallet / passkey) — no key material, packaging only.
+	mux.HandleFunc("/csw/erc1271", cswErc1271Handler)
+	mux.HandleFunc("/csw/account", cswAccountHandler)
 
 	log.Printf("[wallet-svc] listening %s (coin=%d, network=%s, eip3009=%v, genericSign=%v)",
 		listen, coin, networkStr(), gccToken != "" && payTo != "", allowGenericSign)
