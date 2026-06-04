@@ -272,15 +272,29 @@ func envOr(k, def string) string {
 	return def
 }
 
-func main() {
-	raw := strings.TrimPrefix(envOr("WALLET_MASTER_SEED", ""), "0x")
-	if raw == "" {
-		log.Fatal("[wallet-svc] WALLET_MASTER_SEED required (hex; dstack TEE sealed in prod)")
+// loadMasterSeed resolves the master seed via the aigg-wallet MasterSeedSource
+// port: the dstack CVM TEE when WALLET_TEE_BASE_URL is set (production), else
+// the WALLET_MASTER_SEED hex env (dev/staging). Swapping in KMS/HSM later is a
+// new MasterSeedSource impl, no change here.
+func loadMasterSeed() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if base := envOr("WALLET_TEE_BASE_URL", ""); base != "" {
+		log.Printf("[wallet-svc] loading master seed from dstack TEE %s", base)
+		return (&aiggwallet.TEEMasterSeedSource{
+			BaseURL:      base,
+			ServiceToken: envOr("WALLET_TEE_TOKEN", ""),
+			Path:         envOr("WALLET_TEE_PATH", ""),
+		}).MasterSeed(ctx)
 	}
+	return aiggwallet.EnvMasterSeedSource{Var: "WALLET_MASTER_SEED", Getenv: os.Getenv}.MasterSeed(ctx)
+}
+
+func main() {
 	var err error
-	seed, err = hex.DecodeString(raw)
-	if err != nil || len(seed) < 16 {
-		log.Fatal("[wallet-svc] WALLET_MASTER_SEED must be hex, >=16 bytes")
+	seed, err = loadMasterSeed()
+	if err != nil {
+		log.Fatalf("[wallet-svc] master seed: %v (set WALLET_TEE_BASE_URL+WALLET_TEE_TOKEN for dstack TEE, or WALLET_MASTER_SEED hex)", err)
 	}
 	authToken = envOr("WALLET_AUTH_TOKEN", "")
 	allowGenericSign = os.Getenv("WALLET_ALLOW_GENERIC_SIGN") == "1"

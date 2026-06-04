@@ -12,12 +12,24 @@ TS RemoteAgentWallet ──HTTP + Bearer──▶ wallet-svc ──▶ signs wit
 ## Run
 
 ```bash
-WALLET_MASTER_SEED=<hex, >=16 bytes>   # dstack TEE sealed in prod
+# Master seed source (aigg-wallet MasterSeedSource port) — pick ONE:
+#  (a) dstack CVM TEE (production): seed fetched from the sealed store, never on disk
+WALLET_TEE_BASE_URL=https://<appid>-8081.dstack-pha-prodN.phala.network
+WALLET_TEE_TOKEN=<runtime service token>
+WALLET_TEE_PATH=/sub2api/v1/platform/master-seed   # optional (this is the default)
+#  (b) hex env (dev/staging) — used only when WALLET_TEE_BASE_URL is unset:
+WALLET_MASTER_SEED=<hex, >=16 bytes>
+
 WALLET_AUTH_TOKEN=<bearer>             # required (fail-closed if unset)
 WALLET_LISTEN=:8091                    # default
 WALLET_ALLOW_GENERIC_SIGN=1            # dev only — see SECURITY
 go run ./cmd/wallet-svc
 ```
+
+The seed backend is the `aigg-wallet` `MasterSeedSource` port (`TEEMasterSeedSource`
+/ `EnvMasterSeedSource` / `StaticMasterSeedSource`); a KMS/HSM source can be added
+without touching wallet-svc. The seed roots all agent EOAs, so its custody is the
+systemic trust anchor — individual agent keys are bounded by their Permit2 allowance.
 
 ## Endpoints
 
