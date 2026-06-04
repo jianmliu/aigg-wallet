@@ -28,6 +28,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/big"
 	"net/http"
@@ -75,6 +76,38 @@ func accountFor(subject string) uint32 {
 	return v & 0x7fffffff
 }
 
+// keySelector is the derivation selector shared by /address, /sign, and
+// /sign/eip3009. It supports three mutually-exclusive forms (precedence below)
+// so the structured one-owner-many-agents model and the legacy keccak(subject)
+// scheme coexist on the same endpoints — existing callers (subject) are
+// unaffected:
+//
+//	path   != nil  → m/<path...>           (fully explicit; collision-free)
+//	subject != ""  → m/44'/coin'/keccak31  (LEGACY; back-compat for old callers)
+//	owner  >= 1    → m/44'/coin'/owner'/agent'  (STRUCTURED; owner=userID, agent=npcIndex)
+//
+// owner==0 with no subject/path is rejected (a real owner userID is >= 1), which
+// disambiguates "structured" from "nothing supplied".
+type keySelector struct {
+	Subject string   `json:"subject"`
+	Owner   uint32   `json:"owner"`
+	Agent   uint32   `json:"agent"`
+	Path    []uint32 `json:"path,omitempty"`
+}
+
+func (sel keySelector) deriveKey() (*aiggwallet.AgentKey, error) {
+	switch {
+	case len(sel.Path) > 0:
+		return aiggwallet.DerivePath(seed, sel.Path...)
+	case sel.Subject != "":
+		return aiggwallet.Derive(seed, coin, accountFor(sel.Subject))
+	case sel.Owner >= 1:
+		return aiggwallet.DeriveAgent(seed, coin, sel.Owner, sel.Agent)
+	default:
+		return nil, fmt.Errorf("selector_required: provide subject | path | owner(>=1)+agent")
+	}
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(code)
@@ -102,7 +135,7 @@ func randomNonce() (string, error) {
 }
 
 type addressReq struct {
-	Subject string `json:"subject"`
+	keySelector
 }
 
 func addressHandler(w http.ResponseWriter, r *http.Request) {
@@ -115,13 +148,13 @@ func addressHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req addressReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Subject == "" {
-		writeJSON(w, 400, map[string]string{"error": "subject_required"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad_request"})
 		return
 	}
-	key, err := aiggwallet.Derive(seed, coin, accountFor(req.Subject))
+	key, err := req.deriveKey()
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
 	defer key.Zeroize()
@@ -129,7 +162,7 @@ func addressHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type eip3009Req struct {
-	Subject     string `json:"subject"`
+	keySelector        // subject | path | owner+agent (see keySelector)
 	Value       string `json:"value"` // GCC atoms (uint256, decimal string)
 	ValidAfter  int64  `json:"validAfter"`
 	ValidBefore int64  `json:"validBefore"`
@@ -153,8 +186,8 @@ func signEip3009Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req eip3009Req
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Subject == "" || req.Value == "" {
-		writeJSON(w, 400, map[string]string{"error": "subject_and_value_required"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
+		writeJSON(w, 400, map[string]string{"error": "selector_and_value_required"})
 		return
 	}
 	value, ok := new(big.Int).SetString(req.Value, 10)
@@ -184,16 +217,16 @@ func signEip3009Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	signer, err := aiggwallet.NewBIP44Signer(seed, coin, accountFor(req.Subject))
+	// Derive the per-NPC / per-subject key (structured owner+agent, explicit
+	// path, or legacy subject). Sign the EIP-3009 typed data directly off the
+	// key so all three derivation forms work without a per-form signer type.
+	key, err := req.deriveKey()
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	from, err := signer.Address(r.Context())
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
-		return
-	}
+	defer key.Zeroize()
+	from := key.Address
 	params := aiggwallet.EIP3009TransferParams{
 		Token:       gccToken,
 		From:        from,
@@ -204,7 +237,12 @@ func signEip3009Handler(w http.ResponseWriter, r *http.Request) {
 		Nonce:       nonce,
 		ChainID:     chainID,
 	}
-	sp, err := signer.SignEIP3009(r.Context(), params, gccName, gccVersion)
+	td, err := aiggwallet.BuildEIP3009TypedData(params, gccName, gccVersion)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "sign_failed", "detail": err.Error()})
+		return
+	}
+	sp, err := aiggwallet.SignTypedData(key.PrivateKey, td)
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": "sign_failed", "detail": err.Error()})
 		return
@@ -230,8 +268,8 @@ func signEip3009Handler(w http.ResponseWriter, r *http.Request) {
 }
 
 type signReq struct {
-	Subject   string             `json:"subject"`
-	TypedData apitypes.TypedData `json:"typedData"`
+	keySelector                    // subject | path | owner+agent (see keySelector)
+	TypedData   apitypes.TypedData `json:"typedData"`
 }
 
 // signHandler — DEV-only generic EIP-712 signer (gated). Prefer /sign/eip3009.
@@ -249,13 +287,13 @@ func signHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req signReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Subject == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "bad_request"})
 		return
 	}
-	key, err := aiggwallet.Derive(seed, coin, accountFor(req.Subject))
+	key, err := req.deriveKey()
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
 	defer key.Zeroize()

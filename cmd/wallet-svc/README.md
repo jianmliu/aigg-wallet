@@ -36,11 +36,16 @@ systemic trust anchor — individual agent keys are bounded by their Permit2 all
 | Method / path | Body | Returns |
 |---|---|---|
 | `GET /healthz` | — | `{ ok, genericSign, eip3009, network, csw, cswAddressResolution }` |
-| `POST /address` | `{ subject }` | `{ address, derivationPath }` — `m/44'/<coin>'/<account(keccak(subject))>'` (legacy; 31-bit, collides ~55k subjects) |
+| `POST /address` | _selector_ | `{ address, derivationPath }` |
 | `POST /address/agent` | `{ owner, agent }` | `{ address, derivationPath }` — **structured** `m/44'/<coin>'/<owner>'/<agent>'` (collision-free, preferred) |
 | `POST /address/path` | `{ path:[i0,i1,…] }` | `{ address, derivationPath }` — arbitrary all-hardened path `m/<i0>'/<i1>'/…` |
-| **`POST /sign/eip3009`** | `{ subject, value, validAfter?, validBefore?, nonce? }` | `{ address, signature, digest, payload, requirements }` — **scoped, production** |
-| `POST /sign` | `{ subject, typedData }` | `{ address, signature, digest }` — generic EIP-712, **DEV-gated** |
+| **`POST /sign/eip3009`** | _selector_ `+ { value, validAfter?, validBefore?, nonce? }` | `{ address, signature, digest, payload, requirements }` — **scoped, production** |
+| `POST /sign` | _selector_ `+ { typedData }` | `{ address, signature, digest }` — generic EIP-712, **DEV-gated** |
+
+**_selector_** (`/address`, `/sign`, `/sign/eip3009` all accept one of these, precedence top→bottom):
+- `{ path:[i0,…] }` → `m/<i0>'/…` (fully explicit)
+- `{ subject }` → `m/44'/<coin>'/<keccak31(subject)>'` (**legacy**; 31-bit, collides ~55k subjects — back-compat only)
+- `{ owner, agent }` → `m/44'/<coin>'/<owner>'/<agent>'` (**structured**, owner=userID≥1, agent=npcIndex; collision-free — the one-owner-many-agents model). `owner==0` with no subject/path → `selector_required`.
 | `POST /sign/tx` | `{ owner, agent \| path, chainID, nonce, to, data, value?, gas, gasTipCap, gasFeeCap }` | `{ from, rawSignedTx, hash }` — raw EIP-1559 signing for agent-spend delegation, **gated `WALLET_ALLOW_SIGN_TX=1`** |
 | `POST /csw/erc1271` | `{ authenticatorData, clientDataJSON, signature, ownerIndex? }` (all hex) | `{ erc1271, challenge }` — **Model B** |
 | `POST /csw/account` | `{ owners:[{x,y}\|{address}], nonce? }` | `{ factory, ownerBytes[], createAccountCalldata, getAddressCalldata, address? }` — **Model B** |
