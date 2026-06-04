@@ -23,12 +23,36 @@ go run ./cmd/wallet-svc
 
 | Method / path | Body | Returns |
 |---|---|---|
-| `GET /healthz` | — | `{ ok, genericSign, eip3009, network }` |
+| `GET /healthz` | — | `{ ok, genericSign, eip3009, network, csw, cswAddressResolution }` |
 | `POST /address` | `{ subject }` | `{ address, derivationPath }` — `m/44'/<coin>'/<account(keccak(subject))>'` |
 | **`POST /sign/eip3009`** | `{ subject, value, validAfter?, validBefore?, nonce? }` | `{ address, signature, digest, payload, requirements }` — **scoped, production** |
 | `POST /sign` | `{ subject, typedData }` | `{ address, signature, digest }` — generic EIP-712, **DEV-gated** |
+| `POST /csw/erc1271` | `{ authenticatorData, clientDataJSON, signature, ownerIndex? }` (all hex) | `{ erc1271, challenge }` — **Model B** |
+| `POST /csw/account` | `{ owners:[{x,y}\|{address}], nonce? }` | `{ factory, ownerBytes[], createAccountCalldata, getAddressCalldata, address? }` — **Model B** |
 
 Auth: `Authorization: Bearer <WALLET_AUTH_TOKEN>` (fail-closed when unset).
+
+### Model B — Coinbase Smart Wallet / passkey (no key material)
+
+Unlike the EIP-3009 path, these hold **no key material**: a passkey signs on the
+**user's device** (WebAuthn). wallet-svc only **packages** the assertion into the
+Coinbase Smart Wallet (CSW) ERC-1271 blob and derives the CSW account
+address/calldata, so non-Go callers (onchainpal) don't re-implement the exact
+`WebAuthnAuth`/`SignatureWrapper` ABI (cross-validated on-chain against the
+deployed CSW; see `aigg-src/docs/superpowers/spikes/permit2-csw-1271`).
+
+- **`/csw/erc1271`** — turn a WebAuthn passkey assertion (`authenticatorData`,
+  `clientDataJSON`, DER `signature`, all 0x-hex) into the ERC-1271 `erc1271` blob
+  that `Permit2.permit` / `isValidSignature` accept. Echoes the decoded
+  `challenge` so the caller can confirm it equals the CSW `replaySafeHash`.
+- **`/csw/account`** — for a set of owners (passkey `{x,y}` and/or EOA
+  `{address}`), returns the CSW factory, the per-owner `ownerBytes`, the
+  `createAccount` / `getAddress` calldata, and (when `WALLET_CSW_RPC_URL` is set)
+  the counterfactual `address`.
+
+```
+WALLET_CSW_RPC_URL=https://sepolia.base.org   # optional — enables /csw/account "address"
+```
 
 ### `/sign/eip3009` — the production signer
 
